@@ -87,10 +87,11 @@ EVP_CIPHER_CTX *context_e=EVP_CIPHER_CTX_new();
 unsigned char key1[64]={};
 unsigned char key2[64]={};
 unsigned char  iv[16]={};
-const int INLENGTH=512, BUFFER=8;
-int OUTLENGTH=INLENGTH;
-unsigned char inblock[INLENGTH]={},outblock[INLENGTH];
-unsigned char inbuffer[INLENGTH*BUFFER],outbuffer[INLENGTH*BUFFER];
+const int BLOCK=512;
+const int INLENGTH=BLOCK, BUFFER=32;
+int OUTLENGTH=BLOCK;
+//unsigned char inblock[INLENGTH]={},outblock[INLENGTH];
+unsigned char inbuffer[BLOCK*BUFFER],outbuffer[BLOCK*BUFFER];
 //int encr=-1;// unchanged
 //int encr=0; // dencryption
 //int encr=0; // decryption
@@ -107,7 +108,7 @@ if (argc>=4 && string(argv[3])=="d") decr=1;
 if (argc>=4 && string(argv[3])=="e") encr=1;
 if (argc>=4 && string(argv[3])=="r") { encr=1; decr=1; }
 if (argc>=4 && string(argv[3])=="z") { zero=true; encr=1; }
-if (zero) for (int i=0;i<INLENGTH;++i) inblock[i]=0;
+if (zero) for (int i=0;i<INLENGTH*BUFFER;++i) inbuffer[i]=0;
 int interval=5;
 if (encr==1) cout << "Encrypting in " << interval << " seconds" << endl;
 if (decr==1) cout << "Decrypting in " << interval << " seconds" << endl;
@@ -132,7 +133,6 @@ else if ((statbuf.st_mode&S_IFMT)==S_IFREG ) {
     }
   }
 else throw string("neither a device nor a regular file");
-int x;
 long &block=*reinterpret_cast<long*>(iv);
 key_convert(argv[2],key1);
 for (int i=0;argv[2][i];++i) argv[2][i]='X';
@@ -158,25 +158,45 @@ if (decr==1) cout << "Decrypting now"  << endl;
 time_t tm=time(NULL),tm1;
 time_t t0=time(NULL);
 long iis=0;
+long buf_index=0;
+long start_iis=0;
+long tail=0;
+bool eof=false;
+long x;
 for (iis=0;;++iis) {
+  buf_index=iis%BUFFER;
+  if (buf_index==0) { //fill and dump the buffer
+    if (iis!=0) { //dump the buffer
+      int wrt=BUFFER;
+      if (tail!=0) wrt=tail;
+      if (pwrite(fd,outbuffer,BLOCK*wrt,start_iis*BLOCK)!=BLOCK*wrt) {
+        cerr << "\nAttempted processing of block " << iis << endl;
+        perror("pwrite");
+        throw "Error pwrite, maybe EOF?";
+        }
+      }
+    if (!zero && (x=pread(fd,inbuffer,BLOCK*BUFFER,iis*BLOCK))!=BLOCK*BUFFER) {
+      cerr << "\nShort read. Attempted processing of block " << iis << endl;
+      if (x==0) {
+        cerr << "EOF?" << endl;
+        break;
+        }
+      tail=x/BLOCK;
+      cout << "tail is: " << tail << endl;
+      if (x%BLOCK!=0) throw "programmer error 3";
+      }
+    else if (tail>0) throw "programmer error 4";
+    start_iis=iis;
+    }
   if (iis%2048==0) {
     tm1=time(NULL);
     if (tm1!=tm) {
       tm=tm1;
-      print_with_commas(iis*512);
+      print_with_commas(iis*BLOCK);
       }
     }
   block=iis;
   int x;
-  if (!zero && (x=pread(fd,inblock,512,iis*512))!=512) {
-    cerr << "\nAttempted processing of block " << iis << endl;
-    if (x==0) {
-      cerr << "EOF?" << endl;
-      break;
-    }
-    perror("pread");
-    throw "Error pread?";
-    }
   if (decr==1) {
     if (!EVP_CIPHER_CTX_reset(context_d)) {
       cerr << "\nAttempted processing of block " << iis << endl;
@@ -186,7 +206,8 @@ for (iis=0;;++iis) {
       cerr << "\nAttempted processing of block " << iis << endl;
       throw "Error EVP_CipherInit 2";
       }
-    if (!EVP_CipherUpdate(context_d,outblock,&OUTLENGTH,inblock,INLENGTH)) {
+    if (!EVP_CipherUpdate(context_d,outbuffer+buf_index*BLOCK,&OUTLENGTH,
+                                    inbuffer +buf_index*BLOCK,INLENGTH)) {
       cerr << "\nAttempted processing of block " << iis << endl;
       throw "EVP_CipherUpdate";
       }
@@ -195,7 +216,7 @@ for (iis=0;;++iis) {
       throw "OUTLENGTH!=INLENGTH";
       }
     }
-  if (decr==1 && encr==1) memcpy(inblock,outblock,INLENGTH);
+  if (decr==1 && encr==1) memcpy(inbuffer+buf_index*BLOCK,outbuffer+buf_index*BLOCK,INLENGTH);
   if (encr==1) {
     if (!EVP_CIPHER_CTX_reset(context_e)) {
       cerr << "\nAttempted processing of block " << iis << endl;
@@ -205,7 +226,7 @@ for (iis=0;;++iis) {
       cerr << "\nAttempted processing of block " << iis << endl;
       throw "Error EVP_CipherInit 2";
       }
-    if (!EVP_CipherUpdate(context_e,outblock,&OUTLENGTH,inblock,INLENGTH)) {
+    if (!EVP_CipherUpdate(context_e,outbuffer+buf_index*BLOCK,&OUTLENGTH,inbuffer+buf_index*BLOCK,INLENGTH)) {
       cerr << "\nAttempted processing of block " << iis << endl;
       throw "EVP_CipherUpdate";
       }
@@ -214,24 +235,24 @@ for (iis=0;;++iis) {
       throw "OUTLENGTH!=INLENGTH";
       }
     }
-  if (pwrite(fd,outblock,512,iis*512)!=512) {
-    cerr << "\nAttempted processing of block " << iis << endl;
-    perror("pwrite");
-    throw "Error pwrite, maybe EOF?";
-    }
+//if (pwrite(fd,outblock,BLOCK,iis*BLOCK)!=BLOCK) {
+//  cerr << "\nAttempted processing of block " << iis << endl;
+//  perror("pwrite");
+//  throw "Error pwrite, maybe EOF?";
+//  }
   }
 time_t t1=time(NULL);
 cout << "Time in loop: " << t1-t0 << endl;
-cout << "Speed: " << 1.0*iis*512/(t1-t0)/1024/1024 << " MB/s" << endl;
+cout << "Speed: " << 1.0*iis*BLOCK/(t1-t0)/1024/1024 << " MB/s" << endl;
 if (encr==1) {
-  EVP_CipherFinal(context_e,outblock,&OUTLENGTH);
+  EVP_CipherFinal(context_e,outbuffer,&OUTLENGTH);
   if (OUTLENGTH!=0) throw "OUTLENGTH!=0";
-  print_hex(outblock,OUTLENGTH);
+  print_hex(outbuffer,OUTLENGTH);
   }
 if (decr==1) {
-  EVP_CipherFinal(context_d,outblock,&OUTLENGTH);
+  EVP_CipherFinal(context_d,outbuffer,&OUTLENGTH);
   if (OUTLENGTH!=0) throw "OUTLENGTH!=0";
-  print_hex(outblock,OUTLENGTH);
+  print_hex(outbuffer,OUTLENGTH);
   }
 EVP_CIPHER_CTX_free(context_e);
 EVP_CIPHER_CTX_free(context_d);
