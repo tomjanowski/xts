@@ -1,3 +1,3 @@
 LDFLAGS=-lcrypto
-all: xts.o
-	g++ -o xts $< $(LDFLAGS)
+xts: xts.o
+	g++ -o $@ $< $(LDFLAGS)
